@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    * { box-sizing: border-box; }
+    body { width: 320px; font-family: 'Segoe UI', Arial, sans-serif; padding: 15px; background: #141414; color: #ffffff; margin: 0; }
+    h3 { margin-top: 0; margin-bottom: 12px; color: #ff4444; border-bottom: 1px solid #2d2d2d; padding-bottom: 8px; font-size: 16px; }
+    label { font-size: 11px; color: #aaaaaa; display: block; margin-bottom: 6px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
+
+    input { width: 100%; padding: 10px; margin-bottom: 14px; border-radius: 6px; border: 1px solid #333333; background: #1f1f1f; color: white; font-size: 13px; }
+    input:focus { border-color: #ff4444; outline: none; }
+
+    .hint { font-size: 11px; color: #888888; margin-top: -8px; margin-bottom: 14px; display: block; }
+    .hint a { color: #44aaff; text-decoration: none; }
+    .hint a:hover { text-decoration: underline; }
+
+    .buttons { display: flex; gap: 8px; }
+    button { padding: 12px; border: none; border-radius: 6px; cursor: pointer; font-weight: bold; font-size: 13px; color: white; transition: background 0.2s ease; }
+    #save-btn { flex: 2; background: #00cc66; }
+    #save-btn:hover { background: #00b359; }
+    #clear-btn { flex: 1; background: #333333; }
+    #clear-btn:hover { background: #444444; }
+
+    .status { font-size: 12px; color: #00cc66; text-align: center; margin-top: 10px; font-weight: 500; min-height: 16px; }
+    .error { font-size: 12px; color: #ff6b6b; text-align: center; margin-top: 6px; min-height: 16px; word-wrap: break-word; }
+  </style>
+</head>
+<body>
+  <h3>AI YouTube Focus Filter</h3>
+
+  <label for="hf-token">Hugging Face Access Token (Free)</label>
+  <input type="password" id="hf-token" placeholder="Paste your hf_... token">
+  <span class="hint"><a href="https://huggingface.co/settings/tokens" target="_blank">Get a token</a> (enable the "Inference Providers" permission)</span>
+
+  <label for="filter-topic">What do you want to focus on today?</label>
+  <input type="text" id="filter-topic" placeholder="e.g., Learn Python, Space Documentaries">
+
+  <div class="buttons">
+    <button id="save-btn">Apply Filter</button>
+    <button id="clear-btn">Clear</button>
+  </div>
+  <div id="status-msg" class="status"></div>
+  <div id="error-msg" class="error"></div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
