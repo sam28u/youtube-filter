@@ -1,28 +1,17 @@
 {
   "manifest_version": 3,
   "name": "AI YouTube Focus Filter",
-  "version": "1.1",
-  "description": "Only shows YouTube videos matching your chosen focus topic, using Hugging Face zero-shot classification.",
+  "version": "1.4",
+  "description": "Hide YouTube videos that don't match your topic, using Groq's free AI.",
   "permissions": ["storage"],
   "host_permissions": [
-    "https://www.youtube.com/*",
-    "https://m.youtube.com/*",
-    "https://youtube.com/*",
-    "https://router.huggingface.co/*"
+    "https://api.groq.com/*"
   ],
-  "action": {
-    "default_popup": "popup.html"
-  },
-  "background": {
-    "service_worker": "background.js"
-  },
+  "action": { "default_popup": "popup.html" },
+  "background": { "service_worker": "background.js" },
   "content_scripts": [
     {
-      "matches": [
-        "https://www.youtube.com/*",
-        "https://m.youtube.com/*",
-        "https://youtube.com/*"
-      ],
+      "matches": ["https://www.youtube.com/*", "https://m.youtube.com/*"],
       "js": ["content.js"],
       "run_at": "document_idle"
     }

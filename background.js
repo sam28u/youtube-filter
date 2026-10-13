@@ -1,107 +1,145 @@
-const HF_URL =
-  'https://router.huggingface.co/hf-inference/models/facebook/bart-large-mnli';
-const THRESHOLD = 0.45;
-const MAX_RETRIES = 3;
-
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
-function extractScore(data) {
-  if (Array.isArray(data) && data.length && typeof data[0]?.score === 'number') {
-    return Math.max(...data.map((d) => d.score));
+const PROVIDERS = {
+  groq: {
+    url: 'https://api.groq.com/openai/v1/chat/completions',
+    model: 'openai/gpt-oss-120b'
+  },
+  cerebras: {
+    url: 'https://api.cerebras.ai/v1/chat/completions',
+    model: 'gpt-oss-120b'
   }
-  const obj = Array.isArray(data) ? data[0] : data;
-  if (obj && Array.isArray(obj.scores) && obj.scores.length) {
-    return Math.max(...obj.scores);
-  }
-  return undefined;
+};
+
+const THRESHOLD = 0.5;
+const TIMEOUT_MS = 20000;
+const MAX_RETRIES = 2;
+
+function httpError(status, providerName) {
+  if (status === 401 || status === 403) return `${providerName} API key rejected. Check your key.`;
+  if (status === 404) return `${providerName} model not found. Provider may have deprecated it.`;
+  if (status === 429) return `${providerName} rate limited. Switching provider or waiting...`;
+  if (status >= 500) return `${providerName} server error (HTTP ${status}).`;
+  return `${providerName} error: HTTP ${status}`;
 }
 
-function describeHttpError(status) {
-  if (status === 401 || status === 403) {
-    return 'Token rejected. Make sure it has the "Inference Providers" permission.';
-  }
-  if (status === 404 || status === 410) {
-    return 'Hugging Face model endpoint unavailable (HTTP ' + status + ').';
-  }
-  if (status === 429) return 'Rate limited by Hugging Face. Will retry shortly.';
-  return 'API error: HTTP ' + status;
+function buildPrompt(titles, topic) {
+  return `You are a relevance scorer for YouTube videos.
+
+User's focus topic: "${topic}"
+
+For each video title below, return a relevance score between 0.0 and 1.0.
+1.0 = clearly about the topic. 0.0 = completely unrelated.
+
+Titles:
+${titles.map((t, i) => `${i + 1}. ${t}`).join('\n')}
+
+Respond ONLY with a JSON array of ${titles.length} numbers.
+Example: [0.9, 0.1, 0.75, 0.3]`;
 }
 
-async function classify(title, topic) {
-  const { hfToken } = await chrome.storage.local.get('hfToken');
-  if (!hfToken) {
-    return {
-      success: false,
-      error: 'Add your Hugging Face token in the extension popup.',
-      retryable: false
-    };
+function parseScores(text, expected) {
+  const match = text.match(/\[[\s\S]*?\]/);
+  if (!match) return new Array(expected).fill(1);
+  try {
+    const arr = JSON.parse(match[0]);
+    const nums = arr.map(n => Math.max(0, Math.min(1, Number(n) || 0)));
+    while (nums.length < expected) nums.push(1);
+    return nums.slice(0, expected);
+  } catch {
+    return new Array(expected).fill(1);
   }
-
-  const body = JSON.stringify({
-    inputs: String(title).slice(0, 200),
-    parameters: {
-      candidate_labels: [topic],
-      multi_label: true, 
-      hypothesis_template: 'This video is about {}.'
-    }
-  });
-
-  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-    let res;
-    try {
-      res = await fetch(HF_URL, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${hfToken}`,
-          'Content-Type': 'application/json'
-        },
-        body
-      });
-    } catch (err) {
-      if (attempt === MAX_RETRIES) {
-        return { success: false, error: 'Network error', retryable: true };
-      }
-      await sleep(1500 * (attempt + 1));
-      continue;
-    }
-
-    if (res.ok) {
-      let data;
-      try {
-        data = await res.json();
-      } catch (err) {
-        return { success: false, error: 'Invalid JSON from API', retryable: true };
-      }
-      const score = extractScore(data);
-      if (score === undefined) {
-        return { success: false, error: 'Unexpected API response format', retryable: false };
-      }
-      return { success: true, isRelevant: score > THRESHOLD, score };
-    }
-
-    if ((res.status === 503 || res.status === 429) && attempt < MAX_RETRIES) {
-      await sleep(2000 * (attempt + 1));
-      continue;
-    }
-
-    return {
-      success: false,
-      error: describeHttpError(res.status),
-      retryable: res.status === 429 || res.status >= 500
-    };
-  }
-
-  return { success: false, error: 'Unknown error', retryable: true };
 }
 
-chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-  if (request?.action !== 'classifyCloud') return;
+async function callProvider(provider, apiKey, titles, topic) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), TIMEOUT_MS);
 
-  classify(request.title, request.topic)
-    .then(sendResponse)
-    .catch((err) =>
-      sendResponse({ success: false, error: 'Background error: ' + err.message, retryable: true })
-    );
+  try {
+    const res = await fetch(provider.url, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: provider.model,
+        messages: [{ role: 'user', content: buildPrompt(titles, topic) }],
+        temperature: 0
+      }),
+      signal: controller.signal
+    });
 
-  return true; 
+    clearTimeout(timeout);
+
+    if (!res.ok) {
+      const retryAfter = res.headers.get('Retry-After');
+      return { ok: false, status: res.status, retryAfter: retryAfter ? parseInt(retryAfter, 10) : null };
+    }
+
+    const data = await res.json();
+    const text = data.choices?.[0]?.message?.content || '';
+    const scores = parseScores(text, titles.length);
+    return { ok: true, results: scores.map(s => s >= THRESHOLD) };
+  } catch (err) {
+    clearTimeout(timeout);
+    if (err.name === 'AbortError') return { ok: false, error: 'Request timed out.' };
+    return { ok: false, error: err.message };
+  }
+}
+
+chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
+  if (req?.action !== 'classifyBatch') return;
+
+  (async () => {
+    const { apiKey, fallbackApiKey } = await chrome.storage.local.get(['apiKey', 'fallbackApiKey']);
+
+    if (!apiKey) {
+      sendResponse({ success: false, error: 'Add your Groq API key in the popup.' });
+      return;
+    }
+
+    // --- Try primary (Groq) with retries ---
+    let result = null;
+
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      result = await callProvider(PROVIDERS.groq, apiKey, req.titles, req.topic);
+
+      if (result.ok) break;
+
+      if (result.status === 429 && attempt < MAX_RETRIES) {
+        const delay = result.retryAfter ? result.retryAfter * 1000 : 1000 * Math.pow(2, attempt);
+        await new Promise(r => setTimeout(r, delay));
+        continue;
+      }
+      break; // Non-retryable error, exit loop
+    }
+
+    // --- Fallback to Cerebras on failure ---
+    if (!result.ok && fallbackApiKey) {
+      console.log('Groq failed, falling back to Cerebras...');
+
+      for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+        result = await callProvider(PROVIDERS.cerebras, fallbackApiKey, req.titles, req.topic);
+
+        if (result.ok) break;
+
+        if (result.status === 429 && attempt < MAX_RETRIES) {
+          const delay = result.retryAfter ? result.retryAfter * 1000 : 1000 * Math.pow(2, attempt);
+          await new Promise(r => setTimeout(r, delay));
+          continue;
+        }
+        break;
+      }
+    }
+
+    // --- Report final result ---
+    if (result.ok) {
+      sendResponse({ success: true, results: result.results });
+    } else if (result.status) {
+      sendResponse({ success: false, error: httpError(result.status, 'Groq/Cerebras') });
+    } else {
+      sendResponse({ success: false, error: result.error || 'Unknown error.' });
+    }
+  })();
+
+  return true;
 });
